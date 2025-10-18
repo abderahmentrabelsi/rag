@@ -1,0 +1,46 @@
+{
+  "assistant_id": "asst_UZKLhM3wPD06DJuladuHOnRq",
+  "vector_store_id": "vs_68f426863b0481919e35bda2d2903f5e",
+  "files": [
+    {
+      "filename": "Cetec Guides - AP.md",
+      "path": "/docs/Cetec Guides - AP.md"
+    },
+    {
+      "filename": "Cetec Guides - AR.md",
+      "path": "/docs/Cetec Guides - AR.md"
+    },
+    {
+      "filename": "Cetec Guides - Engineering.md",
+      "path": "/docs/Cetec Guides - Engineering.md"
+    },
+    {
+      "filename": "Cetec Guides - Introduction.md",
+      "path": "/docs/Cetec Guides - Introduction.md"
+    },
+    {
+      "filename": "Cetec Guides - Inventory.md",
+      "path": "/docs/Cetec Guides - Inventory.md"
+    },
+    {
+      "filename": "Cetec Guides - Production.md",
+      "path": "/docs/Cetec Guides - Production.md"
+    },
+    {
+      "filename": "Cetec Guides - Purchasing.md",
+      "path": "/docs/Cetec Guides - Purchasing.md"
+    },
+    {
+      "filename": "Cetec Guides - Quality.md",
+      "path": "/docs/Cetec Guides - Quality.md"
+    },
+    {
+      "filename": "Cetec Guides - Sales.md",
+      "path": "/docs/Cetec Guides - Sales.md"
+    },
+    {
+      "filename": "Cetec Guides - Scheduling.md",
+      "path": "/docs/Cetec Guides - Scheduling.md"
+    }
+  ]
+}
