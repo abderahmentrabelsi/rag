@@ -74,7 +74,7 @@ cp .env.example .env
 
 4) Run FastAPI (dev)
 ```
-./.venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir server --reload-exclude ".venv/*" --reload-exclude "*/site-packages/*"
+./.venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir server
 ```
 
 - /health → {"status":"ok"}
