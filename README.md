@@ -1,73 +1,116 @@
 # ERP Help Assistant (OpenAI Assistants + File Search)
 
-Answers questions strictly from your ERP help Markdown files with grounded citations. FastAPI backend with a minimal HTML/JS UI.
+Answers questions strictly from your ERP help Markdown files with grounded citations. Backend is FastAPI. Frontend is React + Vite + Tailwind + shadcn-style components. The UI also displays meta info like time, chunks, shots, tokens, and cost.
 
-Key files:
-- [server/main.py](server/main.py) – FastAPI app, OpenAI Assistant and Vector Store setup, chat UI
-- [server/requirements.txt](server/requirements.txt) – backend dependencies
-- [.env.example](.env.example) – environment template
-- [help_docs/](help_docs) – your Markdown knowledge base
+Key files
+- [server app](server/main.py)
+- [Python deps](server/requirements.txt)
+- [Env template](.env.example)
+- [Help docs (Markdown KB)](help_docs)
+- [React app](frontend)
+  - [Vite config](frontend/vite.config.ts)
+  - [Entry HTML](frontend/index.html)
+  - [TS config](frontend/tsconfig.json)
+  - [App root](frontend/src/App.tsx)
+  - [ReactDOM.createRoot()](frontend/src/main.tsx:1)
+  - [Tailwind config](frontend/tailwind.config.js)
+  - [Global CSS](frontend/src/index.css)
+  - [UI primitives: Button](frontend/src/components/ui/button.tsx)
+  - [UI primitives: Input](frontend/src/components/ui/input.tsx)
+  - [UI primitives: Card](frontend/src/components/ui/card.tsx)
+  - [UI primitives: Badge](frontend/src/components/ui/badge.tsx)
 
+What changed in this version
+- Removed the inline HTML UI previously served from the FastAPI index route. The API now serves JSON at [/](server/main.py:395).
+- Added a React UI with shadcn-style components under [frontend/](frontend).
+- Enriched responses from the Ask endpoint with meta: duration, tokens in/out/total, approximate cost, number of chunks (cited sections), and shots. See [ask()](server/main.py:295). The UI shows a line like:
+  - “Completed in 0.00s using 0 chunks and 0 shots. Tokens in/out/total: 0/0/0. Cost: $0.000000.”
 
-## Architecture
+Architecture
 
 ```mermaid
 flowchart TB
-  U[User] --> UI[FastAPI served HTML UI]
-  UI --> /setup
-  /setup --> OA[OpenAI Assistants]
+  U[User] --> Vite[React Vite UI on localhost 5173]
+  Vite --> /setup
+  Vite --> /ask
+  subgraph FastAPI[FastAPI Backend :8000]
+    /setup --> OA[OpenAI Assistants + File Search]
+    /ask --> OA
+    Docs[/docs static/]:::docs
+  end
   subgraph OpenAI
-    VS[Vector Store] -->|index| OA
+    VS[Vector Store] --> OA
     OA --> LLM[gpt-4o-mini]
   end
-  UI --> /ask
-  /ask --> OA
-  OA --> Ans[Answer + Citations]
-  Ans --> UI
-  UI --> /docs[Static /docs for MD files]
+  OA --> Ans[Answer + Citations + Meta]
+  Ans --> Vite
+
+  classDef docs fill:#fff,stroke:#999,color:#333;
 ```
 
-- Ingestion: /setup creates a vector store, uploads all files from [help_docs/](help_docs), and creates an Assistant configured to “docs-only”.
-- Retrieval + Answering: /ask creates a Thread, runs the Assistant with File Search, and returns the answer with citations to your Markdown files.
-- Citations: Clickable links to files under /docs.
+- Ingestion: POST /setup creates or reuses a vector store, uploads all files from [help_docs/](help_docs), and creates an Assistant with File Search.
+- Retrieval + Answering: POST /ask creates a Thread, runs the Assistant, and returns answer with citations and meta.
+- Citations: Clickable links to the original Markdown files under /docs.
 
-
-## Quickstart
+Backend Quickstart
 
 1) Prereqs
 - Python 3.10+ recommended
-- Git
-- OpenAI API Key with active billing
+- OpenAI API key with active billing
 
-2) Install
-```bash
+2) Install backend deps
+```
 python3 -m venv .venv
 ./.venv/bin/pip install -U pip
 ./.venv/bin/pip install -r server/requirements.txt
 ```
 
-3) Configure
-- Copy [.env.example](.env.example) to .env and set your key:
-```bash
+3) Configure env
+```
 cp .env.example .env
-# edit .env and paste OPENAI_API_KEY=sk-...
+# Edit .env and paste:
+# OPENAI_API_KEY=sk-...
 ```
 
-4) Run
-```bash
+4) Run FastAPI (dev)
+```
 ./.venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir server --reload-exclude ".venv/*" --reload-exclude "*/site-packages/*"
 ```
 
-5) Use
-- Open http://localhost:8000
-- Click Setup to index [help_docs/](help_docs)
-- Ask: “How do I enter a voucher?”
+- /health → {"status":"ok"}
+- /setup → indexes files and creates Assistant
+- /ask → ask a question grounded in your docs
+- /docs → static served Markdown for citation links
 
+Frontend Quickstart (React + Vite + shadcn)
 
-## API
+1) Install Node deps
+```
+cd frontend
+npm install
+```
+
+2) Run Vite dev server
+```
+npm run dev
+```
+
+- Open http://localhost:5173
+- The Vite config proxies API calls to the backend at http://localhost:8000 for:
+  - /health, /setup, /ask, /docs
+
+3) Use the UI
+- Click Setup to index the Markdown files in [help_docs/](help_docs).
+- Ask “How do I enter a voucher?”
+- The UI will show:
+  - The grounded answer
+  - Sources (clickable)
+  - Meta line: “Completed in Ns using K chunks and S shots. Tokens in/out/total: … Cost: $…”
+
+API Reference
 
 - Health
-  - GET /health → {"status":"ok"}
+  - GET /health → {"status": "ok"}
 
 - Setup (create Assistant + vector store + upload docs)
   - POST /setup
@@ -76,100 +119,72 @@ cp .env.example .env
 
 - Ask a question
   - POST /ask
-  - Body: {"question":"...", "thread_id":"optional-thread-id"}
-  - Response: {answer, citations, thread_id, run_id, assistant_id}
+  - Body: {"question": "...", "thread_id": "optional-thread-id"}
+  - Response:
+    - answer: string
+    - citations: [{ filename, url }]
+    - meta:
+      - duration_seconds, duration_ms
+      - tokens: {input, output, total}
+      - cost_usd (approx)
+      - chunks (count of citations)
+      - shots (fixed 0)
+      - model
 
-- Static docs (for citations)
-  - GET /docs/<filename.md>
+Backend implementation details
 
+- Assistant creation and vector store upload are implemented in [setup()](server/main.py:278).
+- Asking a question is implemented in [ask()](server/main.py:295).
+- Runtime meta calculation and cost approximation are added after the run completes (usage tokens may vary by SDK version):
+  - Cost uses approximate 2025 pricing for gpt-4o-mini:
+    - Input: $0.15 per 1M tokens
+    - Output: $0.60 per 1M tokens
+  - If usage is unavailable in the SDK response, tokens are reported as 0 and cost rounds to $0.
 
-## Behavior and Guardrails
+Editors notes and troubleshooting
 
-- Strict grounding: answers only from your docs; otherwise “Not covered in our docs.”
-- Citations: show doc titles and link to /docs/<file>
-- Assistant model: gpt-4o-mini (change in [server/main.py](server/main.py))
-
-
-## Project Layout
-
-- [server/main.py](server/main.py): FastAPI app, OpenAI client, in-memory state helpers, UI, routes
-- [server/requirements.txt](server/requirements.txt): FastAPI, Uvicorn, OpenAI SDK, etc.
-- [help_docs/](help_docs): All Markdown files get indexed
-- [.env.example](.env.example): Set OPENAI_API_KEY
-- [.gitignore](.gitignore): Ignores .env, venv, caches, and assistant state
-
-
-## Troubleshooting
-
-- Dev server keeps reloading endlessly
-  - Cause: reloader watches site-packages. Use the run command above that limits reloader to [server/](server).
-- 404 “Vector store not found”
-  - [server/main.py](server/main.py) auto-recovers: if the saved vector store is missing, it recreates the Assistant + vector store at runtime.
+- Dev server endlessly reloading
+  - Use the provided uvicorn command to restrict watched directories to [server/](server).
+- “Vector store not found”
+  - [ask()](server/main.py:295) validates the vector store and will recreate Assistant + store if missing.
 - 429/Quota error
-  - Add billing or increase limits in your OpenAI org. Code will work once quota is available.
+  - Add billing or increase limits in your OpenAI org. The code will work once quota is available.
 - No answer or missing citations
-  - Improve headings/keywords in docs, add glossary acronyms, then re-run /setup with {"recreate": true}.
+  - Improve headings/keywords, add glossary acronyms to your Markdown, then run /setup with {"recreate": true}.
+- CORS
+  - CORS is allow_origins ["*"] in dev. Restrict before production in [server.main app config](server/main.py:39).
 
+Security and GitHub Push Protection
 
-## GitHub Push Protection – removing leaked secrets
+- Do not commit secrets. [.gitignore](.gitignore) already ignores .env, .env.*, .venv, caches, dist, node_modules, and [server/assistant_state.json](server/assistant_state.json).
+- If a secret was committed:
+  1) Rotate the secret in its provider console.
+  2) Remove it from the working tree and add to .gitignore.
+  3) Rewrite git history to purge the file (e.g., git-filter-repo).
+  4) Force push and verify push-protection passes.
 
-If you accidentally committed your .env with the OpenAI API key, GitHub will block pushes. Do the following:
+Production notes
 
-1) Rotate your OpenAI key immediately
-- Create a new key and update [.env](.env) locally.
-- Revoke the old key in the OpenAI dashboard.
+- Backend
+  - Run gunicorn + uvicorn workers or deploy behind a proxy:
+    ```
+    ./.venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker server.main:app -b 0.0.0.0:8000
+    ```
+- Frontend
+  - Build and serve the static site:
+    ```
+    cd frontend
+    npm run build
+    ```
+    Serve the dist/ directory with any static server or behind your API gateway.
+  - Optional: host the frontend via the FastAPI app by serving the build output (not implemented here; dev uses Vite proxy).
 
-2) Remove .env from current working tree and commit
-```bash
-git rm --cached .env
-git add .gitignore
-git commit -m "chore(security): remove .env from repo and add .gitignore"
-```
+License
 
-3) Purge all history of .env
-- Preferred: git filter-repo (fast, safe)
-```bash
-python3 -m pip install git-filter-repo  # or: brew install git-filter-repo
-git filter-repo --path .env --invert-paths --force
-```
+Internal use unless you choose otherwise.
 
-- Fallback: git filter-branch (slow, legacy)
-```bash
-git filter-branch --force --index-filter \
-  "git rm --cached --ignore-unmatch .env" \
-  --prune-empty --tag-name-filter cat -- --all
-```
-
-4) Force-push rewritten history
-```bash
-git push origin --force --all
-git push origin --force --tags
-```
-
-5) Verify push protection is satisfied
-- Ensure .env is ignored (see [.gitignore](.gitignore)) and not present in any commit.
-- Do NOT approve the bypass link unless absolutely necessary; prefer removing the secret from history.
-
-
-## Production notes
-
-- Model and cost control:
-  - Default is gpt-4o-mini for low cost; change it in [server/main.py](server/main.py).
-- Security:
-  - Never commit .env or secrets. Keep [.gitignore](.gitignore) as-is.
-  - Consider restricting CORS in [server/main.py](server/main.py).
-- Deployment:
-  - Uvicorn behind a reverse proxy (nginx/Caddy) or use Gunicorn workers:
-```bash
-./.venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker server.main:app -b 0.0.0.0:8000
-```
-
-## License
-
-Internal use only, unless you choose a public license.
-
-
-## Acknowledgements
+Acknowledgements
 
 - OpenAI Assistants API with File Search
 - FastAPI / Uvicorn
+- React + Vite + Tailwind + shadcn

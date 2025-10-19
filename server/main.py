@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional, Set
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, HTMLResponse
+from fastapi.responses import ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import OpenAI, APIConnectionError, APIStatusError
@@ -29,6 +29,9 @@ if not HELP_DOCS_DIR.exists():
 if not os.getenv("OPENAI_API_KEY"):
     raise RuntimeError("OPENAI_API_KEY is not set. Create a .env file or export the variable in your shell.")
 client = OpenAI()
+# Approximate 2025 pricing for gpt-4o-mini (USD per token)
+INPUT_PRICE_PER_TOKEN = 0.15 / 1_000_000  # $0.15 per 1M input tokens
+OUTPUT_PRICE_PER_TOKEN = 0.60 / 1_000_000  # $0.60 per 1M output tokens
 
 # FastAPI app
 app = FastAPI(title="ERP Help Center Assistant", default_response_class=ORJSONResponse)
@@ -72,6 +75,7 @@ class AskResponse(BaseModel):
     thread_id: str
     run_id: str
     assistant_id: str
+    meta: Dict[str, Any]
 
 
 # ---------------------------
@@ -295,6 +299,7 @@ def ask(data: AskRequest) -> Any:
         raise HTTPException(status_code=400, detail="Setup not completed. Call /setup first.")
 
     assistant_id: str = state["assistant_id"]
+    start_ts = time.perf_counter()
 
     # Validate vector store exists; if missing (404) recreate assistant + store
     try:
@@ -348,12 +353,38 @@ def ask(data: AskRequest) -> Any:
         if not answer:
             answer = "Not covered in our docs."
 
+        # Metrics
+        elapsed = time.perf_counter() - start_ts
+        run_obj = result["run"]
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+        try:
+            usage = getattr(run_obj, "usage", None)
+            if usage:
+                # Support different SDK field names
+                input_tokens = getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)) or 0
+                output_tokens = getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)) or 0
+                total_tokens = getattr(usage, "total_tokens", (input_tokens + output_tokens)) or (input_tokens + output_tokens)
+        except Exception:
+            pass
+        cost_usd = round(input_tokens * INPUT_PRICE_PER_TOKEN + output_tokens * OUTPUT_PRICE_PER_TOKEN, 6)
+        meta = {
+            "duration_seconds": round(elapsed, 4),
+            "duration_ms": int(elapsed * 1000),
+            "tokens": {"input": input_tokens, "output": output_tokens, "total": total_tokens},
+            "cost_usd": cost_usd,
+            "chunks": len(citations or []),
+            "shots": 0,
+            "model": "gpt-4o-mini",
+        }
         return {
             "answer": answer,
             "citations": citations,
             "thread_id": thread_id,
-            "run_id": result["run"].id,  # type: ignore[attr-defined]
+            "run_id": run_obj.id,  # type: ignore[attr-defined]
             "assistant_id": assistant_id,
+            "meta": meta,
         }
     except (APIConnectionError, APIStatusError) as e:
         raise HTTPException(status_code=502, detail=f"OpenAI API error: {e}")
@@ -361,212 +392,12 @@ def ask(data: AskRequest) -> Any:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> HTMLResponse:
-    # Single-file UI for simplicity
-    html = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>ERP Help Assistant</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root {{
-      --bg: #0f172a;
-      --panel: #111827;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --accent: #22d3ee;
-      --accent2: #60a5fa;
-      --danger: #f87171;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0; padding: 0;
-      background: radial-gradient(circle at 20% 20%, #0b1220, #0a0f1e 40%, #0b1220 75%),
-                  linear-gradient(135deg, rgba(34,211,238,0.08), rgba(96,165,250,0.08));
-      min-height: 100vh; color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell;
-    }}
-    .wrap {{
-      max-width: 980px; margin: 0 auto; padding: 24px;
-    }}
-    .card {{
-      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 14px; padding: 16px;
-      backdrop-filter: blur(6px);
-      box-shadow: 0 8px 30px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05);
-    }}
-    .title {{
-      display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
-    }}
-    .title h1 {{ margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }}
-    .badge {{
-      font-size: 12px; color: var(--muted); padding: 2px 8px; border: 1px solid rgba(255,255,255,0.1); border-radius: 999px;
-      background: rgba(255,255,255,0.02);
-    }}
-    .row {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
-    .row input[type="text"] {{
-      flex: 1; min-width: 280px; padding: 12px 14px; border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.12); background: rgba(17,24,39,0.6); color: var(--text);
-      outline: none; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-    }}
-    .btn {{
-      padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14);
-      background: linear-gradient(180deg, rgba(34,211,238,0.15), rgba(96,165,250,0.15));
-      color: var(--text); cursor: pointer; font-weight: 600; letter-spacing: 0.2px;
-    }}
-    .btn:hover {{ filter: brightness(1.1); }}
-    .btn.alt {{
-      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-    }}
-    .log {{
-      margin-top: 14px; padding: 12px; font-size: 13px; color: var(--muted);
-      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
-      max-height: 160px; overflow: auto;
-    }}
-    .chat {{ margin-top: 16px; display: grid; gap: 12px; }}
-    .bubble {{
-      padding: 12px 14px; border-radius: 12px; line-height: 1.45; white-space: pre-wrap;
-      border: 1px solid rgba(255,255,255,0.08);
-    }}
-    .user {{ background: rgba(34,211,238,0.08); }}
-    .assistant {{ background: rgba(96,165,250,0.10); }}
-    .meta {{ margin-top: 6px; font-size: 12px; color: var(--muted); }}
-    .sources a {{
-      color: var(--accent); text-decoration: none; border-bottom: 1px dashed rgba(34,211,238,0.4);
-    }}
-    .sources a:hover {{ color: var(--accent2); border-color: rgba(96,165,250,0.6); }}
-    .error {{ color: var(--danger); }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <div class="title">
-        <h1>ERP Help Assistant</h1>
-        <span class="badge" id="status">Not initialized</span>
-      </div>
-      <div class="row" style="margin-bottom: 10px;">
-        <button class="btn" onclick="runSetup()">Setup</button>
-        <button class="btn alt" onclick="resetThread()">New Session</button>
-      </div>
-      <div class="row">
-        <input id="q" type="text" placeholder="Ask a question, e.g. How do I create a voucher and print a check?" onkeydown="if(event.key==='Enter'){ask()}" />
-        <button class="btn" onclick="ask()">Ask</button>
-      </div>
-      <div id="log" class="log"></div>
-      <div id="chat" class="chat"></div>
-    </div>
-  </div>
-
-  <script>
-    let threadId = null;
-    let assistantId = null;
-
-    function log(msg, isError=false) {{
-      const el = document.getElementById('log');
-      const div = document.createElement('div');
-      div.textContent = msg;
-      if (isError) div.classList.add('error');
-      el.appendChild(div);
-      el.scrollTop = el.scrollHeight;
-    }}
-
-    function setStatus(text) {{
-      document.getElementById('status').textContent = text;
-    }}
-
-    async function runSetup(recreate=false) {{
-      setStatus('Setting up...');
-      try {{
-        const res = await fetch('/setup', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ recreate }}),
-        }});
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        assistantId = data.assistant_id;
-        setStatus(`Ready with ${data.files_indexed} files`);
-        log(`Assistant ready. Files indexed: ${data.files_indexed}`);
-      }} catch (e) {{
-        setStatus('Setup error');
-        log('Setup failed: ' + e.message, true);
-      }}
-    }}
-
-    function addBubble(text, who='assistant', citations=[]) {{
-      const chat = document.getElementById('chat');
-      const wrap = document.createElement('div');
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble ' + who;
-      bubble.textContent = text;
-      wrap.appendChild(bubble);
-
-      if (who === 'assistant' && citations && citations.length) {{
-        const meta = document.createElement('div');
-        meta.className = 'meta sources';
-        const parts = ['Sources: '];
-        for (let i = 0; i < citations.length; i++) {{
-          const c = citations[i];
-          const a = document.createElement('a');
-          a.href = c.url;
-          a.target = '_blank';
-          a.rel = 'noopener';
-          a.textContent = c.filename;
-          meta.appendChild(document.createTextNode(i === 0 ? 'Sources: ' : ', '));
-          meta.appendChild(a);
-        }}
-        wrap.appendChild(meta);
-      }}
-
-      chat.appendChild(wrap);
-      chat.scrollTop = chat.scrollHeight;
-    }}
-
-    async function ask() {{
-      const input = document.getElementById('q');
-      const question = input.value.trim();
-      if (!question) return;
-      input.value = '';
-
-      addBubble(question, 'user');
-
-      try {{
-        const res = await fetch('/ask', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{
-            question,
-            thread_id: threadId
-          }}),
-        }});
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        threadId = data.thread_id;
-        assistantId = data.assistant_id;
-        addBubble(data.answer || 'Not covered in our docs.', 'assistant', data.citations || []);
-      }} catch (e) {{
-        log('Ask failed: ' + e.message, true);
-        addBubble('There was an error answering your question.', 'assistant');
-      }}
-    }}
-
-    function resetThread() {{
-      threadId = null;
-      document.getElementById('chat').innerHTML = '';
-      log('New session started.');
-    }}
-
-    // Auto-setup on first load
-    runSetup(false);
-  </script>
-</body>
-</html>
-    """
-    return HTMLResponse(content=html)
+@app.get("/")
+def root() -> Dict[str, str]:
+    return {
+        "message": "React UI is served separately. Use the web client to interact with this API.",
+        "docs_path": "/docs"
+    }
 
 
 if __name__ == "__main__":
