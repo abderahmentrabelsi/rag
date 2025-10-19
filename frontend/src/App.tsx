@@ -74,7 +74,7 @@ export default function App() {
       const data: AskResponse = await res.json();
       const meta = data.meta;
       const metaLine = meta
-        ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: $${meta.cost_usd.toFixed(6)}.`
+        ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: ${meta.cost_usd.toFixed(6)}. Model: ${meta.model}.`
         : undefined;
 
       setMessages((m) => [
@@ -134,19 +134,25 @@ export default function App() {
                     {m.role === "user" ? "You" : "Assistant"}
                   </div>
                   <div className="whitespace-pre-wrap">{m.text}</div>
+
+                  {/* Sources highlighted but NOT clickable */}
                   {m.citations && m.citations.length > 0 && (
                     <div className="mt-2 text-xs text-muted-foreground">
-                      Sources:{" "}
-                      {m.citations.map((c, idx) => (
-                        <span key={c.url}>
-                          <a className="underline" href={c.url} target="_blank" rel="noreferrer">
+                      Sources:
+                      <span className="ml-1">
+                        {m.citations.map((c, idx) => (
+                          <span
+                            key={`${c.filename}-${idx}`}
+                            className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold bg-accent/40 text-muted-foreground mr-1"
+                            title={c.filename}
+                          >
                             {c.filename}
-                          </a>
-                          {idx < m.citations!.length - 1 ? ", " : ""}
-                        </span>
-                      ))}
+                          </span>
+                        ))}
+                      </span>
                     </div>
                   )}
+
                   {m.metaLine && (
                     <div className="mt-1 text-xs text-muted-foreground">
                       {m.metaLine}

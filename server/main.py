@@ -29,9 +29,16 @@ if not HELP_DOCS_DIR.exists():
 if not os.getenv("OPENAI_API_KEY"):
     raise RuntimeError("OPENAI_API_KEY is not set. Create a .env file or export the variable in your shell.")
 client = OpenAI()
-# Approximate 2025 pricing for gpt-4o-mini (USD per token)
-INPUT_PRICE_PER_TOKEN = 0.15 / 1_000_000  # $0.15 per 1M input tokens
-OUTPUT_PRICE_PER_TOKEN = 0.60 / 1_000_000  # $0.60 per 1M output tokens
+MODEL = os.getenv("ASSISTANT_MODEL", "gpt-4o-nano")
+
+# Approximate 2025 pricing per 1M tokens (input, output)
+_PRICES = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o-nano": (0.05, 0.20),
+}
+_input_ppm, _output_ppm = _PRICES.get(MODEL, _PRICES["gpt-4o-mini"])
+INPUT_PRICE_PER_TOKEN = _input_ppm / 1_000_000
+OUTPUT_PRICE_PER_TOKEN = _output_ppm / 1_000_000
 
 # FastAPI app
 app = FastAPI(title="ERP Help Center Assistant", default_response_class=ORJSONResponse)
@@ -170,7 +177,7 @@ def _create_or_get_assistant_and_vector_store(recreate: bool = False) -> Dict[st
 
     assistant = client.beta.assistants.create(
         name="ERP Help Assistant",
-        model="gpt-4o-mini",
+        model=MODEL,
         instructions=instructions,
         tools=[{"type": "file_search"}],
         tool_resources={
@@ -376,7 +383,7 @@ def ask(data: AskRequest) -> Any:
             "cost_usd": cost_usd,
             "chunks": len(citations or []),
             "shots": 0,
-            "model": "gpt-4o-mini",
+            "model": MODEL,
         }
         return {
             "answer": answer,

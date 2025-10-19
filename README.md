@@ -53,6 +53,8 @@ Backend
 - Configure
   - cp .env.example .env
   - Set the API key in .env
+  - Model (optional): defaults to a cost‑optimised setting; you can change it via the ASSISTANT_MODEL key in .env if needed
+  - Optional: set ASSISTANT_MODEL=gpt-4o-nano for lowest cost; default uses a balanced model
 - Run API
   - ./.venv/bin/python -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir server
   - Health: http://localhost:8000/health
