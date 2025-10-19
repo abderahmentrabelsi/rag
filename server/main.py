@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional, Set
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from collections import OrderedDict
@@ -485,6 +485,146 @@ def ask(data: AskRequest) -> Any:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# SSE helper to frame events consistently
+def _sse(event: str, data: Any) -> str:
+    try:
+        payload = json.dumps(data)
+    except Exception:
+        payload = json.dumps({"message": str(data)})
+    return f"event: {event}\n" f"data: {payload}\n\n"
+
+
+@app.post("/ask/stream")
+def ask_stream(data: AskRequest):
+    """
+    Server-Sent Events endpoint for streaming answers with zero extra token cost.
+    We still use the Assistants run under the hood; we stream the final result as SSE frames.
+    Frames:
+      - start: empty payload
+      - delta: { "text": "...partial or full text..." }
+      - done: { "meta": {...}, "citations": [...] }
+      - error: { "status": "...", "message": "..." }
+    """
+    state = _load_state()
+    if "assistant_id" not in state or "vector_store_id" not in state:
+        raise HTTPException(status_code=400, detail="Setup not completed. Call /setup first.")
+
+    assistant_id_state: str = state["assistant_id"]
+
+    def event_gen():
+        start_ts = time.perf_counter()
+        # Notify client stream started
+        yield _sse("start", {})
+
+        # 1) Cache lookup (free, immediate)
+        cache_key = _cache_key(data.question, MODEL, state["vector_store_id"])
+        cached = ANSWER_CACHE.get(cache_key)
+        if cached is not None:
+            answer = cached["answer"]
+            citations = cached["citations"]
+            elapsed = time.perf_counter() - start_ts
+            meta = {
+                "duration_seconds": round(elapsed, 4),
+                "duration_ms": int(elapsed * 1000),
+                "tokens": {"input": 0, "output": 0, "total": 0},
+                "cost_usd": 0.0,
+                "chunks": len(citations or []),
+                "shots": 0,
+                "model": MODEL,
+                "cached": True,
+            }
+            yield _sse("delta", {"text": answer})
+            yield _sse("done", {"meta": meta, "citations": citations})
+            return
+
+        # 2) Ensure vector store exists; recreate if missing
+        try:
+            client.vector_stores.retrieve(vector_store_id=state["vector_store_id"])
+            assistant_id_local = assistant_id_state
+        except Exception:
+            new_state = _create_or_get_assistant_and_vector_store(recreate=True)
+            state.update(new_state)
+            assistant_id_local = state["assistant_id"]
+
+        # 3) Thread create/reuse
+        if data.thread_id:
+            thread_id = data.thread_id
+        else:
+            thread = client.beta.threads.create()
+            thread_id = thread.id  # type: ignore[attr-defined]
+
+        # 4) Add user question
+        client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=data.question,
+        )
+
+        # 5) Run assistant (poll completion, then stream frames)
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id_local,
+        )
+
+        result = _poll_run(thread_id=thread_id, run_id=run.id)  # type: ignore[attr-defined]
+        status = result["status"]
+        if status != "completed":
+            err_msg = ""
+            run_obj = result.get("run")
+            try:
+                last_err = getattr(run_obj, "last_error", None)
+                if last_err:
+                    err_msg = f", error: {getattr(last_err, 'message', str(last_err))}"
+            except Exception:
+                pass
+            yield _sse("error", {"status": status, "message": f"Run did not complete{err_msg}"})
+            return
+
+        # 6) Extract answer and citations
+        parsed = _extract_answer_and_citations(thread_id=thread_id)
+        answer = (parsed["answer"] or "").strip()
+        citations = parsed["citations"]
+
+        if not answer:
+            answer = "Not covered in our docs."
+
+        # 7) Compute meta (same accounting as /ask)
+        run_obj = result["run"]
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+        try:
+            usage = getattr(run_obj, "usage", None)
+            if usage:
+                input_tokens = getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)) or 0
+                output_tokens = getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)) or 0
+                total_tokens = getattr(usage, "total_tokens", (input_tokens + output_tokens)) or (input_tokens + output_tokens)
+        except Exception:
+            pass
+        cost_usd = round(input_tokens * INPUT_PRICE_PER_TOKEN + output_tokens * OUTPUT_PRICE_PER_TOKEN, 6)
+        elapsed = time.perf_counter() - start_ts
+        meta = {
+            "duration_seconds": round(elapsed, 4),
+            "duration_ms": int(elapsed * 1000),
+            "tokens": {"input": input_tokens, "output": output_tokens, "total": total_tokens},
+            "cost_usd": cost_usd,
+            "chunks": len(citations or []),
+            "shots": 0,
+            "model": MODEL,
+            "cached": False,
+        }
+
+        # 8) Cache for next time
+        try:
+            ANSWER_CACHE.set(cache_key, {"answer": answer, "citations": citations})
+        except Exception:
+            pass
+
+        # 9) Stream answer + done
+        yield _sse("delta", {"text": answer})
+        yield _sse("done", {"meta": meta, "citations": citations})
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 @app.get("/")
 def root() -> Dict[str, str]:
     return {

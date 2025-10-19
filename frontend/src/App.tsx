@@ -56,39 +56,86 @@ export default function App() {
     }
   }
 
-  async function ask() {
+  async function askStream() {
     const q = question.trim();
     if (!q) return;
     setQuestion("");
+    // Add user message
     setMessages((m) => [...m, { role: "user", text: q }]);
+    // Add empty assistant message to stream into
+    setMessages((m) => [...m, { role: "assistant", text: "", citations: [], metaLine: undefined, metaCached: false }]);
     setBusy(true);
     try {
-      const res = await fetch(`${API_BASE}/ask`, {
+      const res = await fetch(`${API_BASE}/ask/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q }),
       });
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const err = await res.text().catch(() => "");
-        throw new Error(err || `Ask failed with ${res.status}`);
+        throw new Error(err || `Stream failed with ${res.status}`);
       }
-      const data: AskResponse = await res.json();
-      const meta = data.meta;
-      const metaLine = meta
-        ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: $${meta.cost_usd.toFixed(6)}. Model: ${meta.model}.`
-        : undefined;
-      const isCached = !!meta?.cached;
-
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          text: data.answer || "Not covered in our docs.",
-          citations: data.citations || [],
-          metaLine,
-          metaCached: isCached,
-        },
-      ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() || "";
+        for (const raw of frames) {
+          const lines = raw.split("\n");
+          let event = "";
+          let data = "";
+          for (const line of lines) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!event) continue;
+          if (event === "delta") {
+            let payload: any;
+            try { payload = JSON.parse(data); } catch { payload = { text: data }; }
+            const chunk = payload?.text ?? "";
+            if (chunk) {
+              setMessages((m) => {
+                const copy = [...m];
+                const last = copy[copy.length - 1];
+                if (last && last.role === "assistant") {
+                  last.text = (last.text || "") + chunk;
+                }
+                return copy;
+              });
+            }
+          } else if (event === "done") {
+            let payload: any = {};
+            try { payload = JSON.parse(data); } catch {}
+            const citations: Citation[] = payload?.citations || [];
+            const meta = payload?.meta;
+            const metaLine = meta
+              ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: $${meta.cost_usd.toFixed(6)}. Model: ${meta.model}.`
+              : undefined;
+            const isCached = !!meta?.cached;
+            setMessages((m) => {
+              const copy = [...m];
+              const last = copy[copy.length - 1];
+              if (last && last.role === "assistant") {
+                last.citations = citations;
+                last.metaLine = metaLine;
+                last.metaCached = isCached;
+              }
+              return copy;
+            });
+          } else if (event === "error") {
+            let payload: any = {};
+            try { payload = JSON.parse(data); } catch {}
+            setMessages((m) => [
+              ...m,
+              { role: "assistant", text: `Error: ${payload?.status || "Unknown error"}` },
+            ]);
+          }
+        }
+      }
     } catch (e: any) {
       setMessages((m) => [
         ...m,
@@ -125,9 +172,9 @@ export default function App() {
                 placeholder="Ask a question, e.g., How do I enter a voucher?"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => (e.key === "Enter" ? ask() : undefined)}
+                onKeyDown={(e) => (e.key === "Enter" ? askStream() : undefined)}
               />
-              <Button disabled={busy || !initialized} onClick={ask}>Ask</Button>
+              <Button disabled={busy || !initialized} onClick={askStream}>Ask</Button>
             </div>
 
             <div className="space-y-4">

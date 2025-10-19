@@ -5,9 +5,11 @@ Answers questions strictly from Cetec ERP help documentation (Markdown), with ci
 ## What it does
 - Uses the help_docs content as the only source of truth
 - Returns concise, step‑by‑step guidance with the exact menu paths
-- Always shows source links to the relevant Markdown files
+- Streams answers via SSE at /ask/stream for better perceived speed
+- Shows source badges for the relevant Markdown files (highlighted, not clickable)
 - Refuses to answer if not covered by the docs
-- Adds a meta line per answer: time, chunks used, shots, tokens, and cost
+- Adds a meta line per answer: time, chunks used, shots, tokens, cost, model, and cached=true|false
+- Avoids re-paying for identical questions via an LRU+TTL answer cache
 
 ## Why it matters
 - Consistent answers aligned with Cetec ERP processes
@@ -19,24 +21,26 @@ Answers questions strictly from Cetec ERP help documentation (Markdown), with ci
 ```mermaid
 flowchart LR
   U[User] --> UI[React UI]
-  UI --> API[FastAPI API]
-  API --> Setup[Setup]
-  API --> Ask[Ask]
+  UI -->|POST /setup| API[FastAPI API]
+  UI -->|POST /ask/stream (SSE)| API
+  API --> Docs[/docs static Markdown/]
 
   subgraph Engine
-    IDX[Docs Index] --> ANS[Answer Engine]
+    VS[(Managed Vector Store)]
+    A[Assistant]
   end
 
-  Setup --> IDX
-  Ask --> ANS
-  ANS --> OUT[Answer + citations + meta]
-  OUT --> UI
-  API --> Docs[/docs static Markdown/]
+  API -->|Index MD| VS
+  API -->|Ask| A
+  A -->|Retrieval| VS
+  A -->|Answer + citations| API
+  API -->|SSE: start/delta/done| UI
 ```
 
 - Setup indexes the Markdown files and prepares the answering engine
-- Ask retrieves only from the Cetec help docs and returns an answer with citations
-- Citations link to your Markdown files served by the API at /docs
+- Ask/Stream retrieves only from the Cetec help docs and returns an answer with citations
+- Citations appear as source badges (not clickable) pointing to /docs/<file>. They are extracted when the model emits file_citation annotations.
+- Responses include meta with tokens, cost, model, and cached flag
 
 ## Quick start
 
@@ -84,7 +88,7 @@ Scope and behavior
 - If not covered, the assistant replies: Not covered in our docs
 
 Observability
-- Each answer includes time and a cost estimate, based on tokens
+- Each answer includes time, token usage, cost estimate, model, and cached flag
 
 
 ## Components
@@ -98,6 +102,7 @@ Observability
 - GET  /health
 - POST /setup
 - POST /ask
+- POST /ask/stream (text/event-stream)
 - GET  /docs
 
 ## Repository layout
@@ -111,3 +116,4 @@ Observability
 - Run the API behind the standard reverse proxy with TLS
 - Build and host the React UI as static assets
 - Keep .env out of version control
+- If hosted behind a proxy/CDN, disable response buffering for text/event-stream to preserve SSE
