@@ -21,20 +21,20 @@ Answers questions strictly from Cetec ERP help documentation (Markdown), with ci
 ```mermaid
 flowchart LR
   U[User] --> UI[React UI]
-  UI -->|POST /setup| API[FastAPI API]
-  UI -->|POST /ask/stream (SSE)| API
-  API --> Docs[/docs static Markdown/]
+  UI -- POST /setup --> API[FastAPI API]
+  UI -- POST /ask/stream SSE --> API
+  API -- serves /docs --> Docs[Static Markdown]
 
   subgraph Engine
-    VS[(Managed Vector Store)]
+    VS[Managed Vector Store]
     A[Assistant]
   end
 
-  API -->|Index MD| VS
-  API -->|Ask| A
-  A -->|Retrieval| VS
-  A -->|Answer + citations| API
-  API -->|SSE: start/delta/done| UI
+  API -- Index MD --> VS
+  API -- Ask --> A
+  A -- Retrieval --> VS
+  A -- Answer + citations --> API
+  API -- SSE: start / delta / done --> UI
 ```
 
 - Setup indexes the Markdown files and prepares the answering engine
@@ -73,9 +73,9 @@ Frontend
 
 What you will see
 - An answer grounded in the Cetec help docs
-- Sources with clickable links to the exact Markdown files
+- Sources shown as badges (not clickable), referencing the exact Markdown files
 - A meta line, for example:
-  - Completed in Ns using K chunks and S shots. Tokens in/out/total: A/B/C. Cost: $D
+  - Completed in Ns using K chunks and S shots. Tokens in/out/total: A/B/C. Cost: $D. Model: M. Cached: true|false
 
 ## Operations
 
