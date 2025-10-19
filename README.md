@@ -84,11 +84,6 @@ Scope and behavior
 Observability
 - Each answer includes time and a cost estimate, based on tokens
 
-## Security
-
-- API key stays in .env and is ignored by git
-- Direct links to the source Markdown allow quick verification
-- Data handling and retention can be configured at the org level
 
 ## Components
 
