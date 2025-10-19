@@ -13,6 +13,7 @@ type Meta = {
   chunks: number;
   shots: number;
   model: string;
+  cached?: boolean;
 };
 type AskResponse = {
   answer: string;
@@ -31,7 +32,7 @@ export default function App() {
   const [busy, setBusy] = React.useState(false);
   const [question, setQuestion] = React.useState("");
   const [messages, setMessages] = React.useState<
-    { role: "user" | "assistant"; text: string; citations?: Citation[]; metaLine?: string }[]
+    { role: "user" | "assistant"; text: string; citations?: Citation[]; metaLine?: string; metaCached?: boolean }[]
   >([]);
 
   async function setup(recreate = false) {
@@ -74,8 +75,9 @@ export default function App() {
       const data: AskResponse = await res.json();
       const meta = data.meta;
       const metaLine = meta
-        ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: ${meta.cost_usd.toFixed(6)}. Model: ${meta.model}.`
+        ? `Completed in ${meta.duration_seconds.toFixed(2)}s using ${meta.chunks} chunks and ${meta.shots} shots. Tokens in/out/total: ${meta.tokens.input}/${meta.tokens.output}/${meta.tokens.total}. Cost: $${meta.cost_usd.toFixed(6)}. Model: ${meta.model}.`
         : undefined;
+      const isCached = !!meta?.cached;
 
       setMessages((m) => [
         ...m,
@@ -84,6 +86,7 @@ export default function App() {
           text: data.answer || "Not covered in our docs.",
           citations: data.citations || [],
           metaLine,
+          metaCached: isCached,
         },
       ]);
     } catch (e: any) {
@@ -153,9 +156,12 @@ export default function App() {
                     </div>
                   )}
 
-                  {m.metaLine && (
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {m.metaLine}
+                  {(m.metaLine || m.metaCached) && (
+                    <div className="mt-1 text-xs text-muted-foreground flex items-center gap-2">
+                      <span>{m.metaLine}</span>
+                      {m.metaCached && (
+                        <Badge className="border-amber-400 text-amber-700 bg-amber-100">Cached</Badge>
+                      )}
                     </div>
                   )}
                 </div>

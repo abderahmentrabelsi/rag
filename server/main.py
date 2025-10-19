@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from collections import OrderedDict
 from openai import OpenAI, APIConnectionError, APIStatusError
 
 # Load environment variables
@@ -39,6 +40,57 @@ _PRICES = {
 _input_ppm, _output_ppm = _PRICES.get(MODEL, _PRICES["gpt-4o-mini"])
 INPUT_PRICE_PER_TOKEN = _input_ppm / 1_000_000
 OUTPUT_PRICE_PER_TOKEN = _output_ppm / 1_000_000
+
+# Answer cache settings (to avoid re-paying for identical answers)
+ANSWER_CACHE_TTL_SECONDS = int(os.getenv("ANSWER_CACHE_TTL_SECONDS", "86400"))  # 24h
+ANSWER_CACHE_MAX_ENTRIES = int(os.getenv("ANSWER_CACHE_MAX_ENTRIES", "500"))
+
+class AnswerCache:
+    def __init__(self, max_entries: int, ttl_seconds: int):
+        self.max = max_entries
+        self.ttl = ttl_seconds
+        self.data: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+    def _evict_if_needed(self) -> None:
+        while len(self.data) > self.max:
+            self.data.popitem(last=False)
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        item = self.data.get(key)
+        if not item:
+            return None
+        if now - item["ts"] > self.ttl:
+            try:
+                del self.data[key]
+            except Exception:
+                pass
+            return None
+        # refresh LRU
+        self.data.move_to_end(key, last=True)
+        return item["value"]
+
+    def set(self, key: str, value: Dict[str, Any]) -> None:
+        now = time.time()
+        if key in self.data:
+            try:
+                del self.data[key]
+            except Exception:
+                pass
+        self.data[key] = {"ts": now, "value": value}
+        self._evict_if_needed()
+
+    def clear(self) -> None:
+        self.data.clear()
+
+def _normalize_question(q: str) -> str:
+    # trim, lowercase, collapse inner whitespace
+    return " ".join(q.strip().lower().split())
+
+def _cache_key(question: str, model: str, vector_store_id: str) -> str:
+    return f"{model}|{vector_store_id}|{_normalize_question(question)}"
+
+ANSWER_CACHE = AnswerCache(ANSWER_CACHE_MAX_ENTRIES, ANSWER_CACHE_TTL_SECONDS)
 
 # FastAPI app
 app = FastAPI(title="ERP Help Center Assistant", default_response_class=ORJSONResponse)
@@ -286,6 +338,9 @@ def health() -> Dict[str, str]:
 def setup(data: SetupRequest) -> Any:
     try:
         state = _create_or_get_assistant_and_vector_store(recreate=bool(data.recreate))
+        # Clear cache on reindex to avoid stale answers
+        if bool(data.recreate):
+            ANSWER_CACHE.clear()
         files = state.get("files", [])
         return {
             "assistant_id": state["assistant_id"],
@@ -307,6 +362,31 @@ def ask(data: AskRequest) -> Any:
 
     assistant_id: str = state["assistant_id"]
     start_ts = time.perf_counter()
+    # Cache lookup to avoid re-paying for identical answers on same docs index and model
+    cache_key = _cache_key(data.question, MODEL, state["vector_store_id"])
+    cached = ANSWER_CACHE.get(cache_key)
+    if cached is not None:
+        answer = cached["answer"]
+        citations = cached["citations"]
+        elapsed = time.perf_counter() - start_ts
+        meta = {
+            "duration_seconds": round(elapsed, 4),
+            "duration_ms": int(elapsed * 1000),
+            "tokens": {"input": 0, "output": 0, "total": 0},
+            "cost_usd": 0.0,
+            "chunks": len(citations or []),
+            "shots": 0,
+            "model": MODEL,
+            "cached": True,
+        }
+        return {
+            "answer": answer,
+            "citations": citations,
+            "thread_id": data.thread_id or "cached",
+            "run_id": "cached",
+            "assistant_id": assistant_id,
+            "meta": meta,
+        }
 
     # Validate vector store exists; if missing (404) recreate assistant + store
     try:
@@ -384,7 +464,13 @@ def ask(data: AskRequest) -> Any:
             "chunks": len(citations or []),
             "shots": 0,
             "model": MODEL,
+            "cached": False,
         }
+        # Save to cache for future identical queries on same docs index and model
+        try:
+            ANSWER_CACHE.set(cache_key, {"answer": answer, "citations": citations})
+        except Exception:
+            pass
         return {
             "answer": answer,
             "citations": citations,
